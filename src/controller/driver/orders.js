@@ -313,10 +313,97 @@ const addOrderItems = async (req, res) => {
   }
 };
 
+const getOrderDetails = async (req, res) => {
+  try {
+    const driverId = req.driver.id;
+    const orderId = req.params.orderId;
+
+    const [orders] = await pool.query(
+      `SELECT 
+        o.id,
+        o.pickup_time,
+        o.pickup_date,
+        o.delivery_time,
+        o.delivery_date,
+        o.order_total,
+        o.payment_mode,
+        o.payment_status,
+        o.order_status,
+        a.addressName,
+        a.area,
+        a.buildingNumber,
+        a.landmark,
+        a.latitude,
+        a.longitude,
+        u.fullName as customerName,
+        u.phone as customerPhone,
+        osn.statusName as currentStatus,
+        GROUP_CONCAT(
+          CONCAT(s.name, '|', i.name, '|', oi.quantity, '|', oi.item_price) 
+          ORDER BY s.name, i.name 
+          SEPARATOR ';'
+        ) as items_data
+      FROM orders o
+      JOIN addresses a ON o.address = a.id
+      JOIN users u ON o.user_id = u.id
+      JOIN order_status_names osn ON o.order_status = osn.id
+      LEFT JOIN order_items oi ON o.id = oi.order_id
+      LEFT JOIN items i ON oi.item_id = i.id
+      LEFT JOIN category c ON i.category_id = c.id
+      LEFT JOIN services s ON c.service_id = s.id
+      WHERE o.id = ? AND o.van_id = ?
+      GROUP BY o.id`,
+      [orderId, driverId]
+    );
+
+    // @ts-ignore
+    if (!orders.length) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+
+    // Transform the result to group products by service
+    const order = orders[0];
+    const serviceMap = new Map();
+
+    if (order.items_data) {
+      const items = order.items_data.split(";");
+      items.forEach((item) => {
+        const [service, product, quantity, price] = item.split("|");
+        if (service && product && quantity) {
+          if (!serviceMap.has(service)) {
+            serviceMap.set(service, {
+              service: service,
+              productList: [],
+            });
+          }
+          serviceMap.get(service).productList.push({
+            product: product,
+            quantity: parseInt(quantity),
+            price: parseFloat(price),
+          });
+        }
+      });
+    }
+
+    // Remove the raw items_data and add the grouped services
+    const { items_data: _, ...orderWithoutItemsData } = order;
+    const transformedOrder = {
+      ...orderWithoutItemsData,
+      services: Array.from(serviceMap.values()),
+    };
+
+    res.json(transformedOrder);
+  } catch (err) {
+    console.error("Error fetching order details:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
 module.exports = {
   getAssignedOrders,
   updateOrderStatus,
   getVanDetails,
   updatePaymentStatus,
   addOrderItems,
+  getOrderDetails,
 };
